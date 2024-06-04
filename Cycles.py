@@ -712,20 +712,11 @@ class MemoryZone:
                     assert (
                         circles_dict[circle][0][1] == circles_dict[circle][1][0]
                     ), "circle is not two edges? Middle node should be the same"
-                    # if middle node is exit or exit connection -> skip also middle node -> can always push through to parking edge
-                    # TODO unskip
-                    # if (
-                    #     nx.get_node_attributes(self.graph, "node_type")[circles_dict[circle][0][1]] in ("exit_node", "exit_connection_node")
-                    # ):
-                    #     circle_or_path = []
 
                 # new if same edge twice is parking edge -> skip completely
                 elif get_idx_from_idc(self.idc_dict, circles_dict[circle][0]) == get_idx_from_idc(
                     self.idc_dict, self.graph_creator.parking_edge
                 ):
-                    # if self.count_chains_in_parking() >= self.max_num_parking:
-                    #     circle_or_path = [(circles_dict[circle][0][0], circles_dict[circle][0][0])]
-                    # else:
                     circle_or_path = []
                 else:  # else if path is same edge twice skip (but of course keep first node -> no movement into this edge)
                     circle_or_path = [(circles_dict[circle][0][0], circles_dict[circle][0][0])]
@@ -754,25 +745,6 @@ class MemoryZone:
             nodes1 = get_circle_nodes(circle1)
             nodes2 = get_circle_nodes(circle2)
 
-            # following clause is only to allow some cases that the assert would stop
-            # if (
-            #     len(nodes1) != 0
-            #     and len(nodes2) != 0
-            #     and get_idx_from_idc(self.idc_dict, circles_dict[circle1][-1])
-            #     != get_idx_from_idc(self.idc_dict, self.graph_creator.parking_edge)
-            #     and not (
-            #         len(nodes1.intersection(nodes2).intersection(junction_nodes)) > 0
-            #         and self.graph_creator.processing_zone not in nodes1.intersection(nodes2)
-            #     )
-            #     # added new clause that it is allowed if they block each other (this is the if statement below, that adds the circles to junction_shared_pairs and thus the first blocks the second)
-            # ):
-            #     # assert that circles don't end in same edge (just sanity check at this point - exceptions are added in if clause above after being checked)
-            #     assert get_idx_from_idc(self.idc_dict, circles_dict[circle1][-1]) != (
-            #         get_idx_from_idc(self.idc_dict, circles_dict[circle2][-1])
-            #     ), "circles end in same edge, was in if statement below as: or (get_idx_from_idc(self.idc_dict, circles_dict[circle1][-1]) == (get_idx_from_idc(self.idc_dict, circles_dict[circle2][-1]))), -> problem with circles: {}, {}".format(
-            #         circles_dict[circle1], circles_dict[circle2]
-            #     )
-
             # new: exclude processing zone node -> if pz node in circles -> can both be executed (TODO check again for moves out of pz)
             # extra: if both end in same edge -> don't execute (scenario where path out of pz ends in same edge as next edge for other)
             if (
@@ -784,41 +756,52 @@ class MemoryZone:
             ):
                 junction_shared_pairs.append((circle1, circle2))
 
-        # free_circle_combs = [
-        #     circle_idx_pair
-        #     for circle_idx_pair in combinations_of_circles
-        #     if (circle_idx_pair not in junction_shared_pairs and (circle_idx_pair[1], circle_idx_pair[0]) not in junction_shared_pairs)
-        # ]
         return junction_shared_pairs  # , free_circle_combs
 
     # change: if list in other list -> take longer list, delete other
     # if list can be connected to other list -> combine and delete both
 
-    def rotate(self, full_circle_idxs, plot=False):
-        # create dictionary of state
-        # convert keys to values and vice versa, so one can iterate over the path (positions need to be keys here)
-        edge_state_dict = {}
-        for ion, edge in self.ion_chains.items():
-            edge_state_dict[get_idx_from_idc(self.idc_dict, edge)] = ion
+    def rotate(self, full_circle_idxs):
+        # if full_circle_idxs is 3 edges with first two being the same -> SWAP
+        if full_circle_idxs[0] == full_circle_idxs[1] and len(full_circle_idxs)==3:
+            # create dictionary of state
+            # convert keys to values and vice versa, so one can iterate over the path (positions need to be keys here)
+            edge_state_dict = {}
+            for ion, edge in self.ion_chains.items():
+                edge_state_dict[get_idx_from_idc(self.idc_dict, edge)] = ion
 
-        new_edge_state_dict = {}
-        for edge_bef, edge_aft in pairwise(full_circle_idxs):
-            try:
-                new_edge_state_dict[edge_aft] = edge_state_dict[edge_bef]
-                del edge_state_dict[edge_bef]
-            except KeyError:
-                continue
+            new_edge_state_dict = {}
+            for edge_bef, edge_aft in pairwise(full_circle_idxs):
+                try:
+                    # new SWAP
+                    new_edge_state_dict[edge_aft] = edge_state_dict[edge_bef]
+                    new_edge_state_dict[edge_bef] = edge_state_dict[edge_aft]
+                except KeyError:
+                    continue
 
-        # change ion chains
-        for idx, ion in new_edge_state_dict.items():
-            self.ion_chains[ion] = get_idc_from_idx(self.idc_dict, idx)
+            # change ion chains
+            for idx, ion in new_edge_state_dict.items():
+                self.ion_chains[ion] = get_idc_from_idx(self.idc_dict, idx)
+        else:
+            # create dictionary of state
+            # convert keys to values and vice versa, so one can iterate over the path (positions need to be keys here)
+            edge_state_dict = {}
+            for ion, edge in self.ion_chains.items():
+                edge_state_dict[get_idx_from_idc(self.idc_dict, edge)] = ion
 
-        if plot is True:
-            self.graph_creator.plot_state(
-                [get_idx_from_idc(self.idc_dict, edge_idc) for edge_idc in self.ion_chains.values()], show_plot=True
-            )
+            new_edge_state_dict = {}
+            for edge_bef, edge_aft in pairwise(full_circle_idxs):
+                try:
+                    new_edge_state_dict[edge_aft] = edge_state_dict[edge_bef]
+                    del edge_state_dict[edge_bef]
+                except KeyError:
+                    continue
 
-        return new_edge_state_dict
+            # change ion chains
+            for idx, ion in new_edge_state_dict.items():
+                self.ion_chains[ion] = get_idc_from_idx(self.idc_dict, idx)
+
+            return new_edge_state_dict
 
     def bfs_free_edge(self, node, other_next_edges):
         state_idxs = self.get_state_idxs()

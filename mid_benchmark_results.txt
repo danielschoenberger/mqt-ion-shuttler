@@ -22,3 +22,17 @@ mid
 & 7 7 2 2 & 50/160 & 980 & 1087.0 & & 636.6949520111084 s  compilation=True \\
 outer
 & 7 7 2 2 & 50/168 & 980 & 1085.0 & & 661.2473018169403 s  compilation=True \\
+outer
+& 5 5 2 2 & 40/80 & 6 & 20.0 & & 21.757641077041626 s  compilation=True \\
+outer
+& 5 5 2 2 & 40/80 & 6 & 20.0 & & 53.07263422012329 s  compilation=True \\
+outer
+& 5 5 2 2 & 40/80 & 6 & 11.0 & & 8.911160230636597 s  compilation=True \\
+outer
+& 5 5 2 2 & 40/80 & 6 & 11.0 & & 6.4238457679748535 s  compilation=True \\
+outer
+& 5 5 2 2 & 40/80 & 6 & 11.0 & & 1.6875698566436768 s  compilation=True \\
+outer
+& 5 5 2 2 & 40/80 & 6 & 11.0 & & 1.6368279457092285 s  compilation=True \\
+outer
+& 5 5 2 2 & 40/80 & 780 & 870.0 & & 376.1893560886383 s  compilation=True \\

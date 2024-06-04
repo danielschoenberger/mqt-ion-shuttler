@@ -174,6 +174,7 @@ def create_circles_for_moves(memorygrid, move_list, flat_seq, gate_execution_fin
     rotate_entry = False
     chain_to_park = memorygrid.find_chain_in_edge(memorygrid.graph_creator.path_to_pz[-1])
     chain_to_move_out_of_pz = None
+    potential_swap = {}
     if memorygrid.count_chains_in_parking() < memorygrid.max_num_parking or gate_execution_finished:
         parking_open = True
     else:
@@ -205,37 +206,13 @@ def create_circles_for_moves(memorygrid, move_list, flat_seq, gate_execution_fin
             all_circles[rotate_chain] = [edge_idc, next_edge]
             # block moves to pz if parking is full (now blocks if parking not open and chain moving in exit and its next edge is in state_idxs)
             if (
-                #     get_idx_from_idc(memorygrid.idc_dict, next_edge)
-                #     in [
-                #         *memorygrid.graph_creator.path_to_pz_idxs,
-                #         get_idx_from_idc(memorygrid.idc_dict, memorygrid.graph_creator.parking_edge),
-                #     ]
-                #     and
                 parking_open
                 is False
             ) and (get_idx_from_idc(memorygrid.idc_dict, next_edge) in memorygrid.state_idxs):
                 all_circles[rotate_chain] = [edge_idc, edge_idc]
 
-            # #) and (get_idx_from_idc(memorygrid.idc_dict, next_edge) in stop_exit_edges or stop_exit_edges == []):
-
-            #     # old
-            #     # all_circles[rotate_chain] = [edge_idc, edge_idc]
-            #     # # needed later for blocking moves to parking
-            #     # stop_exit_edges.append(get_idx_from_idc(memorygrid.idc_dict, edge_idc))
-
-            #     # new
-            #     # needed later for blocking moves to parking
-            #     stop_exit_edges.append(get_idx_from_idc(memorygrid.idc_dict, edge_idc))
-            #     print('stop_exit_edges: ', stop_exit_edges, 'rotate_chain: ', rotate_chain)
-            #     #((20, 20.0), (21, 21.0))
-            #     #((21, 21.0), (22, 22.0))
-            #     # should only stop if next edge is in stop_exit_edges -> if [] then no stop
-            #     if len(stop_exit_edges) > 1:
-            #         all_circles[rotate_chain] = [edge_idc, edge_idc]
-            #         print('rotate_chain1: ', rotate_chain, stop_exit_edges)
-
         # moves without circle
-        # also if chain is moving out of entry connections (entry is handled in create_outer_circle)
+        # also if chain is moving out of entry connections (entry is handled in create_outer_circle (not for swap move now))
         elif (
             not memorygrid.check_if_edge_is_filled(next_edge)
             or get_idx_from_idc(memorygrid.idc_dict, edge_idc) in memorygrid.graph_creator.path_from_pz_idxs[:-1]
@@ -243,9 +220,13 @@ def create_circles_for_moves(memorygrid, move_list, flat_seq, gate_execution_fin
             all_circles[rotate_chain] = [edge_idc, next_edge]
 
         # moves with circle
+        # out of entry move still needed
+        elif get_idx_from_idc(memorygrid.idc_dict, edge_idc) == memorygrid.graph_creator.path_from_pz_idxs[-1]:
+                all_circles[rotate_chain] = memorygrid.create_outer_circle(edge_idc, next_edge, next_edges.values())
         else:
-            # create circle (deleted in create_outer_circle: in parking circle is a "stop move")
-            all_circles[rotate_chain] = memorygrid.create_outer_circle(edge_idc, next_edge, next_edges.values())
+            # circle is now a swap move -> done later -> change to 3 edges with edge_idc twice -> so the check if circle is free is different (is path in find_nonfree_and_free_circle_idxs)
+            potential_swap[rotate_chain] = ((next_edge, edge_idc))
+            all_circles[rotate_chain] = [edge_idc, edge_idc, next_edge]
 
     # move chain out of parking edge if needed
     chains_in_parking = memorygrid.find_chains_in_parking()
@@ -294,14 +275,10 @@ def create_circles_for_moves(memorygrid, move_list, flat_seq, gate_execution_fin
             for chain, edge_idc in in_and_into_exit_moves.items():
                 all_circles[chain] = [edge_idc, edge_idc]
 
-            # maybe already covered above
-            # all_circles[chain_to_move_out_of_pz] = (
-            #     memorygrid.graph_creator.path_to_pz[-1],
-            #     memorygrid.graph_creator.path_to_pz[-1],
-            # )
+    return all_circles, rotate_entry, chain_to_move_out_of_pz, potential_swap
 
-    return all_circles, rotate_entry, chain_to_move_out_of_pz
-
+# if next edge is blocked - if next edge chain not in move list - swap
+# junctions only one and no swap
 
 def find_movable_circles(memorygrid, all_circles, move_list):
     ######### FIND CIRCLES THAT CAN MOVE #########
@@ -328,7 +305,7 @@ def rotate_free_circles(memorygrid, all_circles, free_circle_seq_idxs, rotate_en
             get_idx_from_idc(memorygrid.idc_dict, edge_idc) for edge_idc in all_circles[seq_idx]
         ]
         # rotate chains
-        _new_state_dict = memorygrid.rotate(free_circle_idxs[seq_idx])
+        memorygrid.rotate(free_circle_idxs[seq_idx])
     if rotate_entry:
         memorygrid.ion_chains[chain_to_move_out_of_pz] = memorygrid.graph_creator.path_from_pz[0]
 
@@ -453,6 +430,35 @@ def check_duplicates(lst, memorygrid, parking_idc, max_number_parking):
                 f"More than {max_number_parking} chains in parking edge {get_idc_from_idx(memorygrid.idc_dict, num)}!"
             )
             raise AssertionError(message)
+        
+# def swap(move_list, potential_swap_moves, memorygrid):
+#     # if next edge was blocked and is still occupied -> swap
+#     # update state idxs
+#     state_idxs = memorygrid.get_state_idxs()
+#     already_swapped = []
+#     # if two chains are in the same edge
+#     for chain in move_list:
+#         try:
+#             next_edge, edge_idc = potential_swap_moves[chain] 
+#             print(next_edge, edge_idc)
+#             if get_idx_from_idc(memorygrid.idc_dict, next_edge) not in state_idxs and (
+#                 get_idx_from_idc(memorygrid.idc_dict, edge_idc) not in already_swapped) and (
+#                 get_idx_from_idc(memorygrid.idc_dict, next_edge) not in already_swapped
+#                 ):
+#                 memorygrid.ion_chains[chain] = next_edge
+            
+#             #already_swapped.append(get_idx_from_idc(memorygrid.idc_dict, edge_idc))
+#             #already_swapped.append(get_idx_from_idc(memorygrid.idc_dict, next_edge))
+#         except KeyError:
+#             continue
+#             # if get_idx_from_idc(memorygrid.idc_dict, potential_swap_edge) in state_idxs:
+#             #     # find chains in this edge
+#             #     chains_in_edge = []
+#             #     for ion, edge_idc in memorygrid.ion_chains.items():
+#             #         if edge_idc == potential_swap_edge:
+#             #             chains_in_edge.append(ion)
+
+
 
 
 def run_simulation(memorygrid, max_timesteps, seq, flat_seq, dag_dep, next_node_initial, max_length, show_plot):
@@ -468,6 +474,16 @@ def run_simulation(memorygrid, max_timesteps, seq, flat_seq, dag_dep, next_node_
 
         # update state idxs
         state_idxs = memorygrid.get_state_idxs()
+        if timestep == 0:
+            memorygrid.graph_creator.plot_state(
+                [get_idx_from_idc(memorygrid.idc_dict, edge_idc) for edge_idc in memorygrid.ion_chains.values()],
+                labels=["time step %s" % timestep, f"next seq elem: {seq[0]}"],
+                show_plot=show_plot,
+                save_plot=save_plot,
+                filename=[Path(run_folder) / f"plot_{timestep:03d}.pdf" if save_plot else None][0],
+            )
+            timestep += 1
+
         # assert check that each edge has only one chain (parking edge at most max parking)
         check_duplicates(state_idxs, memorygrid, memorygrid.graph_creator.parking_edge, memorygrid.max_num_parking)
         # preprocess (move chains within junctions)
@@ -476,7 +492,7 @@ def run_simulation(memorygrid, max_timesteps, seq, flat_seq, dag_dep, next_node_
         move_list = create_move_list(memorygrid, flat_seq, max_length)
         # memorygrid.state_idxs are updated in create_move_list
         # create circles for moves
-        all_circles, rotate_entry, chain_to_move_out_of_pz = create_circles_for_moves(
+        all_circles, rotate_entry, chain_to_move_out_of_pz, potential_swap_moves = create_circles_for_moves(
             memorygrid, move_list, flat_seq, gate_execution_finished, new_gate_starting
         )
         new_gate_starting = False
@@ -508,6 +524,9 @@ def run_simulation(memorygrid, max_timesteps, seq, flat_seq, dag_dep, next_node_
             next_gate_is_two_qubit_gate,
             show_plot,
         )
+
+        #swap(move_list, potential_swap_moves, memorygrid)
+
         if finished:
             return timestep
         timestep += 1

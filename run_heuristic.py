@@ -24,13 +24,22 @@ from scheduling import create_initial_sequence, create_starting_config, run_simu
 
 # archs =  [[2, 2, 1, 100]]#, [2, 2, 1, 11], [2, 2, 1, 19], [2, 2, 1, 29], [2, 2, 1, 100],
 archs = [
-    [5, 5, 2, 2]
+    [3, 3, 2, 2],
+    [4, 4, 2, 2],
+    [5, 5, 2, 2],
+    [6, 6, 2, 2],
+    [7, 7, 2, 2],
+    # [8, 8, 2, 2],
+    # [9, 9, 2, 2],
+    # [10, 10, 2, 2],
+    # [11, 11, 2, 2],
+    # [12, 12, 2, 2],
 ] 
-seeds = [0]  # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+seeds = [0, 1, 2, 3, 4]  # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
-compilation = True
+compilation = False
 
-pzs = ['mid', 'outer']
+pzs = ['outer']
 for pz in pzs:
     for arch in archs:
         timestep_arr = []
@@ -47,7 +56,7 @@ for pz in pzs:
             ion_chains, number_of_registers = create_starting_config(num_ion_chains, graph, seed=seed)
 
             #filename = "QASM_files/GHZ/ghz_nativegates_quantinuum_tket_%s.qasm" % num_ion_chains #qft_%squbits.qasm" % num_ion_chains
-            filename = "QASM_files/full_register_access_06.qasm" #% num_ion_chains
+            filename = "QASM_files/Qft_no_swaps/qft_no_swaps_nativegates_quantinuum_tket_%s.qasm" % num_ion_chains
             max_timesteps = 100000000
 
             print(f"arch: {arch}, seed: {seed}, registers: {number_of_registers}\n")
@@ -75,14 +84,14 @@ for pz in pzs:
             )
             seq_length = len(seq)
             timestep = run_simulation(
-                memorygrid, max_timesteps, seq, flat_seq, dag_dep, next_node_initial, max_length=10, show_plot=True
+                memorygrid, max_timesteps, seq, flat_seq, dag_dep, next_node_initial, max_length=10, show_plot=False
             )
             timestep_arr.append(timestep)
             cpu_time = time.time() - start_time
             cpu_time_arr.append(cpu_time)
 
             # Create a Path object for the file
-            file_path = Path("mid_benchmark_results.txt")
+            file_path = Path("no_comp_swap_qft.txt")
 
             # with file_path.open("a") as file:
             #     line = f"& {arch[0]} {arch[1]} {arch[2]} {arch[3]} {cpu_time} {timestep} \\\\"
@@ -96,4 +105,4 @@ for pz in pzs:
         # Open the file using the Path object
         with file_path.open("a") as file:
             line = f"& {arch[0]} {arch[1]} {arch[2]} {arch[3]} & {number_of_registers}/{n_of_traps} & {seq_length} & {timestep_mean} & & {cpu_time_mean} {'s'} {' compilation='}{compilation} \\\\"
-            file.write(f"{pz}\n" + line + "\n")
+            file.write(f"{timestep_arr}\n" + line + "\n")
