@@ -411,7 +411,7 @@ def create_cycles_for_moves(graph, move_list, cycle_or_paths, pz, other_next_edg
                 all_cycles[rotate_ion] = create_cycle(graph, edge_idc, next_edge)
             else:
                 all_cycles[rotate_ion] = create_path_via_bfs_directional(
-                    graph, edge_idc, next_edge, other_next_edges=None
+                    graph, edge_idc, next_edge
                 )
 
     return all_cycles, in_and_into_exit_moves

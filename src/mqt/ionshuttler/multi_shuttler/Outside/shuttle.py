@@ -81,7 +81,7 @@ def shuttle(graph, priority_queue, timestep, cycle_or_paths, unique_folder):
         prio_queue = part_prio_queues[pz.name]
         move_list = create_move_list(graph, prio_queue, pz)
         cycles, in_and_into_exit_moves = create_cycles_for_moves(
-            graph, move_list, cycle_or_paths, pz, other_next_edges=None
+            graph, move_list, cycle_or_paths, pz
         )
         # add cycles to all_cycles
         all_cycles = {**all_cycles, **cycles}
