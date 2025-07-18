@@ -20,7 +20,7 @@ from .scheduling import (
 )
 
 
-def check_duplicates(graph):
+def check_duplicates(graph, timestep):
     edge_idxs_occupied = []
     for edge_idc in graph.state.values():
         edge_idxs_occupied.append(get_idx_from_idc(graph.idc_dict, edge_idc))
@@ -30,7 +30,7 @@ def check_duplicates(graph):
     for idx, count in counts.items():
         edge_idc = get_idc_from_idx(graph.idc_dict, idx)
         if graph.get_edge_data(edge_idc[0], edge_idc[1])["edge_type"] != "parking_edge" and count > 1:
-            message = f"More than one ion in edge {edge_idc}, arch: {graph.arch}, circuit depth: {len(graph.sequence)}, seed: {graph.seed}!"
+            message = f"More than one ion in edge {edge_idc}, arch: {graph.arch}, timestep: {timestep}, circuit depth: {len(graph.sequence)}, seed: {graph.seed}!"
             raise AssertionError(message)
 
         if (
@@ -69,7 +69,7 @@ def shuttle(graph, priority_queue, timestep, cycle_or_paths, unique_folder):
     # Update ion chains after preprocess
     graph.state = get_ions(graph)
 
-    check_duplicates(graph)
+    check_duplicates(graph, timestep)
     part_prio_queues = get_partitioned_priority_queues(priority_queue)
 
     all_cycles = {}
@@ -85,8 +85,9 @@ def shuttle(graph, priority_queue, timestep, cycle_or_paths, unique_folder):
         )
         # add cycles to all_cycles
         all_cycles = {**all_cycles, **cycles}
-
+    print(f"all_cycles: {[(key, value) for key, value in all_cycles.items()]}")
     out_of_entry_moves = find_out_of_entry_moves(graph, other_next_edges=[])
+    print(f"out_of_entry_moves: {[(key.name, value) for key, value in out_of_entry_moves.items()]}")
 
     for pz in graph.pzs:
         prio_queue = part_prio_queues[pz.name]
@@ -99,6 +100,7 @@ def shuttle(graph, priority_queue, timestep, cycle_or_paths, unique_folder):
 
     # now general priority queue picks cycles to rotate
     chains_to_rotate = find_movable_cycles(graph, all_cycles, priority_queue, cycle_or_paths)
+    print(f"chains_to_rotate: {chains_to_rotate}")
     rotate_free_cycles(graph, all_cycles, chains_to_rotate)
 
     # Update ions after rotate
@@ -109,7 +111,7 @@ def shuttle(graph, priority_queue, timestep, cycle_or_paths, unique_folder):
         "Sequence: %s" % [graph.sequence if len(graph.sequence) < 8 else graph.sequence[:8]],
     )
 
-    if graph.plot is True or graph.save is True:
+    if (graph.plot is True or graph.save is True) and timestep >= 70:
         plot_state(
             graph,
             labels,
@@ -154,6 +156,7 @@ def main(graph, partition, dag, cycle_or_paths, use_dag):
 
     locked_gates = {}
     while timestep < max_timesteps:
+        print('starting timestep', timestep)
         for pz in graph.pzs:
             pz.rotate_entry = False
             pz.out_of_parking_cycle = None
@@ -176,6 +179,7 @@ def main(graph, partition, dag, cycle_or_paths, use_dag):
         # priority queue is dict with ions as keys and pz as values
         # (for 2-qubit gates pz may not match the pz of the individual ion)
         priority_queue, next_gate_at_pz_dict = create_priority_queue(graph, pz_executing_gate_order)
+        print(f"priority_queue: {priority_queue}")
 
         # check if ions are already in processing zone
         # -> important for 2-qubit gates
