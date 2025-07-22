@@ -160,5 +160,4 @@ def find_nonfree_paths(graph, paths_idcs_dict):
                 )
             ):
                 conflicting_paths.append((path_ion_1, path_ion_2))
-    print(f"conflicting paths: {(conflicting_paths)}")
     return conflicting_paths
