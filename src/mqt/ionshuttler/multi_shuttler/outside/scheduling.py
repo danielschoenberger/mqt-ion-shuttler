@@ -429,7 +429,13 @@ def create_cycles_for_moves(
             elif cycle_or_paths == "Cycles":
                 all_cycles[rotate_ion] = create_cycle(graph, edge_idc, next_edge)
             else:
+<<<<<<< HEAD:src/mqt/ionshuttler/multi_shuttler/outside/scheduling.py
                 all_cycles[rotate_ion] = create_path_via_bfs_directional(graph, edge_idc, next_edge)
+=======
+                all_cycles[rotate_ion] = create_path_via_bfs_directional(
+                    graph, edge_idc, next_edge
+                )
+>>>>>>> 3c76de38036f50eb4300e81651cb760f8220605f:src/mqt/ionshuttler/multi_shuttler/Outside/scheduling.py
 
     return all_cycles, in_and_into_exit_moves
 

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 # Plotting function
 def plot_state(
+<<<<<<< HEAD:src/mqt/ionshuttler/multi_shuttler/outside/plotting.py
     graph: Graph,
     labels: tuple[str, str | None],
     plot_ions: bool = True,
@@ -29,6 +30,18 @@ def plot_state(
         filename = Path("graph.pdf")
 
     plot_paper = True
+=======
+    graph,
+    labels,
+    plot_ions=True,
+    show_plot=False,
+    save_plot=False,
+    plot_cycle=False,
+    plot_pzs=False,
+    filename="graph.pdf",
+):
+    plot_paper = False
+>>>>>>> 3c76de38036f50eb4300e81651cb760f8220605f:src/mqt/ionshuttler/multi_shuttler/Outside/plotting.py
     idc_dict = graph.idc_dict
     pos = {(x, y): (y, -x) for i, (x, y) in enumerate(list(graph.nodes()))}
     if plot_ions is True:
@@ -72,8 +85,12 @@ def plot_state(
                     color=colors[ion_holder[edge][0]],
                 )
 
+<<<<<<< HEAD:src/mqt/ionshuttler/multi_shuttler/outside/plotting.py
     if plot_cycle is not False:
         assert isinstance(plot_cycle, list)
+=======
+    if plot_cycle is True:
+>>>>>>> 3c76de38036f50eb4300e81651cb760f8220605f:src/mqt/ionshuttler/multi_shuttler/Outside/plotting.py
         for edge_idx in plot_cycle:
             edge = get_idc_from_idx(graph.idc_dict, edge_idx)
             graph.add_edge(edge[0], edge[1], color="r")

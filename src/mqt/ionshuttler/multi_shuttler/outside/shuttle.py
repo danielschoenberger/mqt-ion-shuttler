@@ -25,11 +25,15 @@ from .scheduling import (
 if TYPE_CHECKING:
     from qiskit.dagcircuit import DAGDependency
 
+<<<<<<< HEAD:src/mqt/ionshuttler/multi_shuttler/outside/shuttle.py
     from .graph import Graph
     from .types import Edge
 
 
 def check_duplicates(graph: Graph) -> None:
+=======
+def check_duplicates(graph, timestep):
+>>>>>>> 3c76de38036f50eb4300e81651cb760f8220605f:src/mqt/ionshuttler/multi_shuttler/Outside/shuttle.py
     edge_idxs_occupied = []
     for edge_idc in graph.state.values():
         edge_idxs_occupied.append(get_idx_from_idc(graph.idc_dict, edge_idc))
@@ -92,7 +96,13 @@ def shuttle(
     for pz in graph.pzs:
         prio_queue = part_prio_queues[pz.name]
         move_list = create_move_list(graph, prio_queue, pz)
+<<<<<<< HEAD:src/mqt/ionshuttler/multi_shuttler/outside/shuttle.py
         cycles, in_and_into_exit_moves = create_cycles_for_moves(graph, move_list, cycle_or_paths, pz)
+=======
+        cycles, in_and_into_exit_moves = create_cycles_for_moves(
+            graph, move_list, cycle_or_paths, pz
+        )
+>>>>>>> 3c76de38036f50eb4300e81651cb760f8220605f:src/mqt/ionshuttler/multi_shuttler/Outside/shuttle.py
         # add cycles to all_cycles
         all_cycles = {**all_cycles, **cycles}
     out_of_entry_moves = find_out_of_entry_moves(graph, other_next_edges=[])
