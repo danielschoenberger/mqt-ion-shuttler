@@ -12,6 +12,10 @@ if TYPE_CHECKING:
 
 
 class Graph(nx.Graph):  # type: ignore [type-arg]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.executed_gates_next: list[dict[str, object]] = []
+
     @property
     def mz_graph(self) -> Graph:
         return self._mz_graph
