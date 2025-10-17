@@ -29,6 +29,7 @@ __pycache__/
 # development QASM files
 QASM_files/development
 benchmarks/
+runs/
 
 run.py
 adapted_run_benchmarks.py
