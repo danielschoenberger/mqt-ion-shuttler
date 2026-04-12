@@ -27,6 +27,8 @@ paper_run_files/
 
 *.pyc
 
+settings.local.json
+
 run.py
 adapted_run_benchmarks.py
 timeline.json
