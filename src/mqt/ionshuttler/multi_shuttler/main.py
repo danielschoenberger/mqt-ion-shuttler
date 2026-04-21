@@ -13,6 +13,18 @@ from .outside.graph_creator import GraphCreator, PZCreator
 from .outside.partition import get_partition
 from .outside.processing_zone import ProcessingZone
 from .outside.shuttle import main as run_shuttle_main
+from .outside.syndrome_scheduler import (
+    assign_plaquettes_to_pzs,
+    build_shared_boundaries,
+    build_surface_code_pattern,
+    build_surface_code_programs,
+    build_syndrome_map_to_pz,
+    init_syndrome_scheduler_state,
+)
+from .outside.syndrome_compilation import (
+    create_initial_syndrome_sequence,
+    create_updated_syndrome_sequence,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -80,6 +92,9 @@ def main(config: dict[str, Any]) -> int:
         raise ValueError(msg)
 
     use_dag = config.get("use_dag", True)
+    use_syndrome_scheduler = config.get("use_syndrome_scheduler", False)
+    syndrome_distance = config.get("syndrome_distance", 3)
+    syndrome_pz_strategy = config.get("syndrome_pz_strategy", "geometric")
     use_cycle_or_paths = validate_conflict_resolution_mode(config)
     pz_assignment_policy = config.get("pz_assignment_policy", "legacy")
     max_timesteps = config.get("max_timesteps", 1_000_000)
@@ -100,8 +115,8 @@ def main(config: dict[str, Any]) -> int:
         msg = "Config parameter 'arch' is required but not set"
         raise ValueError(msg)
 
-    if algorithm_name is None:
-        msg = "Config parameter 'algorithm_name' is required but not set"
+    if algorithm_name is None and not use_syndrome_scheduler:
+        msg = "Config parameter 'algorithm_name' is required but not set (unless use_syndrome_scheduler is True)"
         raise ValueError(msg)
 
     # Validate Mutual Exclusivity of Ion Count Parameters
@@ -153,7 +168,7 @@ def main(config: dict[str, Any]) -> int:
 
     print(f"Using {len(pzs_to_use)} PZs: {[pz.name for pz in pzs_to_use]}")
     print(f"Architecture: {arch}, Seed: {seed}")
-    print(f"Algorithm: {algorithm_name}")
+    print(f"Algorithm: {algorithm_name if not use_syndrome_scheduler else f'syndrome_d{syndrome_distance}'}")
     print(f"DAG-Compilation: {use_dag}, Conflict Resolution: {use_cycle_or_paths}")
 
     # --- Graph Creation ---
@@ -189,82 +204,138 @@ def main(config: dict[str, Any]) -> int:
 
     print(f"Number of edges in current graph: {len(graph.edges())}")
 
-    qasm_file_path = qasm_base_dir / algorithm_name / f"{algorithm_name}_{num_ions}.qasm"
+    # =========================================================================
+    # Input path: syndrome scheduler  vs.  QASM file
+    # =========================================================================
+    syndrome_state = None
 
-    if not qasm_file_path.is_file():
-        print(f"Error: QASM file not found at {qasm_file_path}")
-        sys.exit(1)
+    if use_syndrome_scheduler:
+        # --- Syndrome Scheduler Path ---
+        print(f"Using syndrome scheduler (distance={syndrome_distance})")
 
-    # --- Initial State & Sequence ---
-    create_starting_config(graph, num_ions, seed=seed)
-    graph.state = get_ions(graph)  # Get initial state {ion: edge_idc}
+        # Build surface code
+        data_qubits, ancilla_qubits, plaquettes = build_surface_code_pattern(syndrome_distance)
+        plaquette_programs, predecessors = build_surface_code_programs(plaquettes)
+        shared_boundaries = build_shared_boundaries(plaquettes)
+        syndrome_state = init_syndrome_scheduler_state(plaquette_programs, shared_boundaries, predecessors)
 
-    graph.sequence = create_initial_sequence(qasm_file_path)
-    seq_length = len(graph.sequence)
-    print(f"Number of Gates: {seq_length}")
+        # Number of ions = all qubits involved (data + ancilla)
+        all_qubit_ids: set[int] = set()
+        for program in plaquette_programs.values():
+            for gate in program:
+                all_qubit_ids.add(gate.ancilla)
+                all_qubit_ids.add(gate.data)
+        num_ions = len(all_qubit_ids)
+        print(f"Syndrome qubits (data + ancilla): {num_ions}")
 
-    # --- Partitioning ---
-    partitioning = True  # Make configurable
-    partitions: dict[str, list[int]] = {}
-    if partitioning:
-        part = get_partition(qasm_file_path, len(graph.pzs))
-        # Ensure partition list length matches num_pzs
-        if len(part) != len(graph.pzs):
-            print(f"Warning: Partitioning returned {len(part)} parts, but expected {len(graph.pzs)}. Adjusting...")
-            if len(part) < len(graph.pzs):
-                print("Error: Partitioning failed to produce enough parts.")
-                sys.exit(1)
-            else:  # More parts than PZs, merge extra parts into the last ones
-                merged = [qubit for sublist in part[len(graph.pzs) - 1 :] for qubit in sublist]
-                part = [*part[: len(graph.pzs) - 1], merged]
+        # Place ions
+        create_starting_config(graph, num_ions, seed=seed)
+        graph.state = get_ions(graph)
 
-        partitions = {pz.name: part[i] for i, pz in enumerate(graph.pzs)}
-        print(f"Partitions: {partitions}")
+        # Build initial sequence from plaquette programs
+        graph.sequence = create_initial_syndrome_sequence(syndrome_state)
+        print(f"Number of syndrome gates: {len(graph.sequence)}")
+
+        # Plaquette-to-PZ partitioning
+        if len(graph.pzs) == 1:
+            map_to_pz: dict[int, str] = {qid: graph.pzs[0].name for qid in all_qubit_ids}
+        else:
+            plaquette_to_pz = assign_plaquettes_to_pzs(
+                plaquettes, shared_boundaries, graph, strategy=syndrome_pz_strategy,
+            )
+            map_to_pz = build_syndrome_map_to_pz(plaquettes, plaquette_to_pz)
+            print(f"Plaquette-to-PZ ({syndrome_pz_strategy}): {plaquette_to_pz}")
+        graph.map_to_pz = map_to_pz
+        graph.syndrome_load_aware = syndrome_pz_strategy == "geometric"
+        print(f"Syndrome map_to_pz: {map_to_pz}")
+
+        # Reorder sequence using distances (like DAG compilation does for QASM)
+        graph.locked_gates = {}
+        graph.sequence = create_updated_syndrome_sequence(graph, syndrome_state)
+        print(f"Reordered syndrome sequence length: {len(graph.sequence)}")
+
+        # DAG is not used in syndrome mode
+        dag = None
+        use_dag = False
+
     else:
-        msg = "Disabling Partitioning has to be implemented. For now, only example for random_connecting 22 ions and 2 PZs."
-        raise NotImplementedError(msg)
+        # --- QASM File Path (unchanged) ---
+        qasm_file_path = qasm_base_dir / algorithm_name / f"{algorithm_name}_{num_ions}.qasm"
 
-    # Create reverse map and validate partition
-    map_to_pz: dict[int, str] = {}
-    all_partition_elements = []
-    for pz_name, elements in partitions.items():
-        all_partition_elements.extend(elements)
-        for element in elements:
-            if element in map_to_pz:
-                print(
-                    f"Warning: Qubit {element} assigned to multiple partitions ({map_to_pz[element]}, {pz_name}). Check partitioning logic."
-                )
-            map_to_pz[element] = pz_name
-    graph.map_to_pz = map_to_pz
+        if not qasm_file_path.is_file():
+            print(f"Error: QASM file not found at {qasm_file_path}")
+            sys.exit(1)
 
-    # Validation
-    unique_sequence_qubits = {item for sublist in graph.sequence for item in sublist}
-    missing_qubits = unique_sequence_qubits - set(all_partition_elements)
-    if missing_qubits:
-        print(f"Error: Qubits {missing_qubits} from sequence are not in any partition.")
-        sys.exit(1)
+        # --- Initial State & Sequence ---
+        create_starting_config(graph, num_ions, seed=seed)
+        graph.state = get_ions(graph)  # Get initial state {ion: edge_idc}
 
-    # --- DAG-Compilation Setup (if enabled) ---
-    dag = None
-    if use_dag:
-        try:
-            for pz in graph.pzs:
-                pz.getting_processed = []
-            dag = create_dag(qasm_file_path)
-            graph.locked_gates = {}
-            dag.copy()  # Keep a copy of the original DAG if needed later
-            # Initial DAG-based sequence update
-            sequence, _, dag = create_updated_sequence_destructive(graph, qasm_file_path, dag, use_dag=True)
-            graph.sequence = sequence
+        graph.sequence = create_initial_sequence(qasm_file_path)
+        seq_length = len(graph.sequence)
+        print(f"Number of Gates: {seq_length}")
 
-        except Exception as e:
-            print(f"Error during DAG creation or initial sequence update: {e}")
-            print("Falling back to non-compiled sequence.")
-            use_dag = False  # Disable use_dag if setup fails
-            dag = None
-            graph.sequence = create_initial_sequence(qasm_file_path)  # Revert to basic sequence
-    else:
-        print("DAG disabled, using static QASM sequence.")
+        # --- Partitioning ---
+        partitioning = True  # Make configurable
+        partitions: dict[str, list[int]] = {}
+        if partitioning:
+            part = get_partition(qasm_file_path, len(graph.pzs))
+            # Ensure partition list length matches num_pzs
+            if len(part) != len(graph.pzs):
+                print(f"Warning: Partitioning returned {len(part)} parts, but expected {len(graph.pzs)}. Adjusting...")
+                if len(part) < len(graph.pzs):
+                    print("Error: Partitioning failed to produce enough parts.")
+                    sys.exit(1)
+                else:  # More parts than PZs, merge extra parts into the last ones
+                    merged = [qubit for sublist in part[len(graph.pzs) - 1 :] for qubit in sublist]
+                    part = [*part[: len(graph.pzs) - 1], merged]
+
+            partitions = {pz.name: part[i] for i, pz in enumerate(graph.pzs)}
+            print(f"Partitions: {partitions}")
+        else:
+            msg = "Disabling Partitioning has to be implemented. For now, only example for random_connecting 22 ions and 2 PZs."
+            raise NotImplementedError(msg)
+
+        # Create reverse map and validate partition
+        map_to_pz = {}
+        all_partition_elements = []
+        for pz_name, elements in partitions.items():
+            all_partition_elements.extend(elements)
+            for element in elements:
+                if element in map_to_pz:
+                    print(
+                        f"Warning: Qubit {element} assigned to multiple partitions ({map_to_pz[element]}, {pz_name}). Check partitioning logic."
+                    )
+                map_to_pz[element] = pz_name
+        graph.map_to_pz = map_to_pz
+
+        # Validation
+        unique_sequence_qubits = {item for sublist in graph.sequence for item in sublist}
+        missing_qubits = unique_sequence_qubits - set(all_partition_elements)
+        if missing_qubits:
+            print(f"Error: Qubits {missing_qubits} from sequence are not in any partition.")
+            sys.exit(1)
+
+        # --- DAG-Compilation Setup (if enabled) ---
+        dag = None
+        if use_dag:
+            try:
+                for pz in graph.pzs:
+                    pz.getting_processed = []
+                dag = create_dag(qasm_file_path)
+                graph.locked_gates = {}
+                dag.copy()  # Keep a copy of the original DAG if needed later
+                # Initial DAG-based sequence update
+                sequence, _, dag = create_updated_sequence_destructive(graph, qasm_file_path, dag, use_dag=True)
+                graph.sequence = sequence
+
+            except Exception as e:
+                print(f"Error during DAG creation or initial sequence update: {e}")
+                print("Falling back to non-compiled sequence.")
+                use_dag = False  # Disable use_dag if setup fails
+                dag = None
+                graph.sequence = create_initial_sequence(qasm_file_path)  # Revert to basic sequence
+        else:
+            print("DAG disabled, using static QASM sequence.")
 
     # --- Run Simulation ---
 
@@ -290,7 +361,9 @@ def main(config: dict[str, Any]) -> int:
     _assert_idc_consistency(graph)
 
     # Run the main shuttling logic
-    final_timesteps = run_shuttle_main(graph, dag, use_cycle_or_paths, use_dag=use_dag)
+    final_timesteps = run_shuttle_main(
+        graph, dag, use_cycle_or_paths, use_dag=use_dag, syndrome_state=syndrome_state
+    )
 
     # --- Results ---
     end_time = datetime.now()

@@ -18,8 +18,6 @@ class ProcessingZone:
         # Initialize the attribute here
         self._active_start_t: int | None = None
 
-    # ... existing properties ...
-
     @property
     def parking_node(self) -> Node:
         return self._parking_node

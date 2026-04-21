@@ -18,6 +18,11 @@ except Exception:  # pragma: no cover
 
 from .compilation import get_all_first_gates_and_update_sequence_non_destructive, remove_processed_gates
 from .cycles import get_ions, precompute_all_paths
+from .syndrome_compilation import (
+    execute_syndrome_gates,
+    get_syndrome_front_gates_and_update_sequence,
+)
+from .syndrome_scheduler import SyndromeGate, SyndromeSchedulerState
 from .graph import RunStats
 from .graph_utils import get_idc_from_idx, get_idx_from_idc
 from .plotting import plot_state
@@ -44,7 +49,7 @@ if TYPE_CHECKING:
 
 # Gate time configuration (overridable from run scripts)
 GATE_TIME_1Q = 1
-GATE_TIME_2Q = 3
+GATE_TIME_2Q = 1
 REHOME = True
 
 
@@ -321,7 +326,15 @@ def _rehome_after_2q(graph: Graph, ion_a: int, ion_b: int, pz_name: str) -> None
         graph.map_to_pz[ion_a] = pz_name
 
 
-def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool, save_dag: bool = False) -> int:
+def main(
+    graph: Graph,
+    dag: DAGDependency,
+    cycle_or_paths: str,
+    use_dag: bool,
+    save_dag: bool = False,
+    *,
+    syndrome_state: SyndromeSchedulerState | None = None,
+) -> int:
     timestep = 0
     graph.state = get_ions(graph)
 
@@ -364,10 +377,19 @@ def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool, s
 
     graph.in_process = {pz.name: [] for pz in graph.pzs}
 
-    if use_dag:
-        next_processable_gate_nodes = get_all_first_gates_and_update_sequence_non_destructive(graph, dag)
+    use_syndrome = syndrome_state is not None
 
     locked_gates: dict[tuple[int, ...], str] = {}
+
+    if use_syndrome:
+        next_processable_syndrome_gates: dict[str, SyndromeGate] = (
+            get_syndrome_front_gates_and_update_sequence(graph, syndrome_state)
+        )
+        # Lock initial gates so create_priority_queue routes ions to the correct PZ
+        for pz_name, sgate in next_processable_syndrome_gates.items():
+            locked_gates[sgate.gate_tuple] = pz_name
+    elif use_dag:
+        next_processable_gate_nodes = get_all_first_gates_and_update_sequence_non_destructive(graph, dag)
     graph.locked_gates = locked_gates
     graph.run_stats = RunStats()
     graph.path_cache = precompute_all_paths(graph)
@@ -377,8 +399,12 @@ def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool, s
             pz.out_of_parking_cycle = None
             pz.out_of_parking_move = None
 
-        if use_dag:
+        if use_syndrome:
             gate_info_list: dict[str, list[int]] = {pz.name: [] for pz in graph.pzs}
+            for pz_name, sgate in next_processable_syndrome_gates.items():
+                gate_info_list[pz_name].extend([sgate.ancilla, sgate.data])
+        elif use_dag:
+            gate_info_list = {pz.name: [] for pz in graph.pzs}
             for pz_name, node in next_processable_gate_nodes.items():
                 for ion in [q._index for q in node.qargs]:
                     gate_info_list[pz_name].append(ion)
@@ -415,7 +441,39 @@ def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool, s
         graph.in_process = {pz.name: [] for pz in graph.pzs}
         graph.state = get_ions(graph)
 
-        if use_dag:
+        if use_syndrome:
+            # --- Syndrome gate execution check ---
+            processed_syndrome_gates: dict[str, SyndromeGate] = {}
+            for pz_name, sgate in next_processable_syndrome_gates.items():
+                pz = graph.pzs_name_map[pz_name]
+                ion1, ion2 = sgate.ancilla, sgate.data
+                state1 = graph.state[ion1]
+                state2 = graph.state[ion2]
+
+                if get_idx_from_idc(graph.idc_dict, state1) == get_idx_from_idc(
+                    graph.idc_dict, pz.parking_edge
+                ) and get_idx_from_idc(graph.idc_dict, state2) == get_idx_from_idc(graph.idc_dict, pz.parking_edge):
+                    pz.gate_execution_finished = False
+                    if pz.active_start_t is None:
+                        pz.active_start_t = timestep
+                    for ion in (ion1, ion2):
+                        if ion not in graph.in_process[pz.name]:
+                            graph.in_process[pz.name].append(ion)
+                    pz.time_in_pz_counter += 1
+
+                    gate_time_2q = GATE_TIME_2Q
+                    if pz.time_in_pz_counter == gate_time_2q:
+                        processed_syndrome_gates[pz_name] = sgate
+                        gate = (ion1, ion2)
+                        if REHOME and not use_syndrome:
+                            _rehome_after_2q(graph, ion1, ion2, pz.name)
+                        if gate in graph.locked_gates and graph.locked_gates[gate] == pz.name:
+                            graph.locked_gates.pop(gate)
+                        pz.time_in_pz_counter = 0
+                        pz.gate_execution_finished = True
+                        print(f"[GATE EXECUTED] t={timestep} gate={gate} at PZ={pz.name}")
+
+        elif use_dag:
             processed_nodes = {}
             for pz_name, gate_node in next_processable_gate_nodes.items():
                 pz = graph.pzs_name_map[pz_name]
@@ -542,15 +600,48 @@ def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool, s
                         pzs.remove(pz_to_remove)
                 previous_ion_processed = ion_processed
 
-        if use_dag:
+        if use_syndrome:
+            # --- Syndrome post-completion ---
+            if processed_syndrome_gates:
+                execs = []
+                for pz_name, sgate in processed_syndrome_gates.items():
+                    pz_obj = graph.pzs_name_map.get(pz_name)
+                    start_t: int | None = pz_obj.active_start_t if pz_obj is not None else None
+                    if pz_obj is not None:
+                        pz_obj.active_start_t = None
+                    qubits = [sgate.ancilla, sgate.data]
+                    duration = GATE_TIME_2Q
+                    t0_val = start_t if isinstance(start_t, int) else max(0, timestep - (duration - 1))
+                    execs.append({
+                        "id": f"t{timestep}_{pz_name}",
+                        "type": "SYNDROME",
+                        "qubits": qubits,
+                        "pz": pz_name,
+                        "plaquette": sgate.plaquette,
+                        "step_idx": sgate.step_idx,
+                        "edge_idc": getattr(pz_obj, "parking_edge", None) if pz_obj else None,
+                        "duration": duration,
+                        "t0": t0_val,
+                    })
+                graph.executed_gates_next = execs
+                execute_syndrome_gates(syndrome_state, graph, processed_syndrome_gates)
+                next_processable_syndrome_gates = (
+                    get_syndrome_front_gates_and_update_sequence(graph, syndrome_state)
+                )
+                for pz_name, sgate in next_processable_syndrome_gates.items():
+                    locked_gates[sgate.gate_tuple] = pz_name
+            else:
+                graph.executed_gates_next = []
+
+        elif use_dag:
             if processed_nodes:
                 execs = []
                 for pz_name, gate_node in processed_nodes.items():
                     try:
                         pz_obj = graph.pzs_name_map.get(pz_name)
-                        start_t: int | None = None
+                        start_t2: int | None = None
                         if pz_obj is not None:
-                            start_t = pz_obj.active_start_t
+                            start_t2 = pz_obj.active_start_t
                             pz_obj.active_start_t = None
                         gtype = (
                             getattr(getattr(gate_node, "op", None), "name", None)
@@ -561,7 +652,7 @@ def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool, s
                             getattr(gate_node, "qindices", [q._index for q in getattr(gate_node, "qargs", [])])
                         )
                         duration = GATE_TIME_2Q if len(qubits) >= 2 else GATE_TIME_1Q
-                        t0_val = start_t if isinstance(start_t, int) else max(0, timestep - (duration - 1))
+                        t0_val = start_t2 if isinstance(start_t2, int) else max(0, timestep - (duration - 1))
                         execs.append({
                             "id": f"t{timestep}_{pz_name}",
                             "type": gtype,

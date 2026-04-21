@@ -7,7 +7,11 @@ from mqt.ionshuttler.multi_shuttler.outside.syndrome_scheduler import (
     SharedBoundary,
     SyndromeGate,
     SyndromeSchedulerState,
+    build_shared_boundaries,
+    build_surface_code_pattern,
+    build_surface_code_programs,
     execute_gate,
+    init_syndrome_scheduler_state,
     get_front_layer,
     is_gate_allowed,
 )
@@ -237,3 +241,26 @@ def test_execute_gate_raises_for_out_of_order_gate():
 
     with pytest.raises(ValueError):
         execute_gate(state, gates_A[1])  # A[0] must go first
+
+
+def test_surface_code_programs_progress_and_include_boundary_gates() -> None:
+    """Generated programs must progress beyond first gate and include boundary-plaquette gates."""
+    _, _, plaquettes = build_surface_code_pattern(3)
+    programs, predecessors = build_surface_code_programs(plaquettes)
+    shared_boundaries = build_shared_boundaries(plaquettes)
+    state = init_syndrome_scheduler_state(programs, shared_boundaries, predecessors)
+
+    bulk_id = next(pid for pid, p in plaquettes.items() if len(p.data_qubits) == 4)
+    bulk_program = programs[bulk_id]
+
+    assert predecessors[bulk_id][bulk_program[1]] == {bulk_program[0].gate_tuple}
+    assert is_gate_allowed(state, bulk_program[0]) is True
+    assert is_gate_allowed(state, bulk_program[1]) is False
+
+    execute_gate(state, bulk_program[0])
+    assert is_gate_allowed(state, bulk_program[1]) is True
+
+    boundary_ids = [pid for pid, p in plaquettes.items() if len(p.data_qubits) == 2]
+    assert boundary_ids
+    for boundary_id in boundary_ids:
+        assert len(programs[boundary_id]) == 2

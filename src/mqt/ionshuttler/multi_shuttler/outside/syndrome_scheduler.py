@@ -41,9 +41,9 @@ class SharedBoundary:
 class SyndromeSchedulerState:
     plaquette_programs: dict[int, list[SyndromeGate]]
     plaquette_ptr: dict[int, int]
-    shared_boundaries: dict[str, SharedBoundary]
-    qubit_to_boundary: dict[tuple[int, int], str]   # qubit is a tuple of (plaquette, data_qubit)
-    boundary_orientation: dict[str, BoundaryOrientation]    # a or b first or undecided for each shared boundary
+    shared_boundaries: dict[int, SharedBoundary]
+    qubit_to_boundary: dict[tuple[int, int], int]  # (plaquette, data_qubit) -> boundary id
+    boundary_orientation: dict[int, BoundaryOrientation]  # boundary id -> orientation
     executed_gates: set[tuple[int, int]] = field(default_factory=set)    # executed gates as (plaquette, data_qubit) - creates empty set for each new instance
     predecessors: dict[int, dict[SyndromeGate, set[tuple[int, int]]]] = field(default_factory=dict)  # for each plaquette: gate to set of predecessor gates
 
@@ -217,7 +217,7 @@ def build_surface_code_programs(
         plaquettes: dict[int, Plaquette],
         x_hook_schedule: str = "N",
         z_hook_schedule: str = "Z",
-    ) -> dict[int, list[SyndromeGate]]:
+    ) -> tuple[dict[int, list[SyndromeGate]], dict[int, dict[SyndromeGate, set[tuple[int, int]]]]]:
         
     programs = {}
     n_pattern = [1, 3, 0, 2]
@@ -226,7 +226,7 @@ def build_surface_code_programs(
     x_schedule = n_pattern if x_hook_schedule == "N" else z_pattern
     z_schedule = n_pattern if z_hook_schedule == "N" else z_pattern
 
-    predecessors: dict[int, dict[SyndromeGate, set[SyndromeGate]]] = {i: {} for i in plaquettes.keys()}
+    predecessors: dict[int, dict[SyndromeGate, set[tuple[int, int]]]] = {i: {} for i in plaquettes.keys()}
 
     for plaquette in plaquettes.values():
         program = []
@@ -237,7 +237,7 @@ def build_surface_code_programs(
             else:
                 reordered_data_qubits = [plaquette.data_qubits[i] for i in z_schedule]
             
-            exec_gates = set()
+            executed_gate_tuples: set[tuple[int, int]] = set()
             for step_idx, data_qubit in enumerate(reordered_data_qubits):
                 program.append(
                     SyndromeGate(
@@ -247,11 +247,19 @@ def build_surface_code_programs(
                         step_idx=step_idx,
                     )
                 )
-                predecessors[plaquette.plaquette_id][program[-1]] = exec_gates.copy()
-                exec_gates.add(program[-1])
+                predecessors[plaquette.plaquette_id][program[-1]] = executed_gate_tuples.copy()
+                executed_gate_tuples.add(program[-1].gate_tuple)
         else:
             # boundary plaquette with only 2 data qubits, no hooks, both gates can be executed in either order
-            predecessors[plaquette.plaquette_id] = set()
+            for step_idx, data_qubit in enumerate(plaquette.data_qubits):
+                boundary_gate = SyndromeGate(
+                    ancilla=plaquette.ancilla,
+                    data=data_qubit,
+                    plaquette=plaquette.plaquette_id,
+                    step_idx=step_idx,
+                )
+                program.append(boundary_gate)
+                predecessors[plaquette.plaquette_id][boundary_gate] = set()
 
         programs[plaquette.plaquette_id] = program
     return programs, predecessors
@@ -310,7 +318,7 @@ def is_gate_allowed(state: SyndromeSchedulerState, gate: SyndromeGate) -> bool:
 
     # For a fully ordered plaquette, this set contains the previous gates.
     # For an edge plaquette with two unordered gates, sets are empty.
-    preds = state.predecessors.get(gate.plaquette).get(gate)
+    preds = state.predecessors.get(gate.plaquette, {}).get(gate, set())
 
     if not preds.issubset(state.executed_gates):
         return False
@@ -377,6 +385,164 @@ def execute_gate(state: SyndromeSchedulerState, gate: SyndromeGate) -> None:
     state.plaquette_ptr[gate.plaquette] += 1
     state.executed_gates.add(gate.gate_tuple)
 
+
+
+def assign_plaquettes_to_pzs(
+    plaquettes: dict[int, Plaquette],
+    shared_boundaries: dict[int, SharedBoundary],
+    graph,
+    strategy: str = "geometric",
+) -> dict[int, str]:
+    """Assign each plaquette to a processing zone.
+
+    Parameters
+    ----------
+    plaquettes : mapping of plaquette id → Plaquette
+    shared_boundaries : mapping of boundary id → SharedBoundary
+    graph : Graph with ``.pzs``, ``.state``, and path-finding support
+    strategy : ``"geometric"`` (distance-based) or ``"round_robin"``
+
+    Returns
+    -------
+    dict mapping plaquette_id → pz_name
+    """
+    from .cycles import find_path_edge_to_edge
+    from .scheduling import get_edge_idc_by_pz_name
+
+    if strategy == "round_robin":
+        plaq_ids = sorted(plaquettes.keys())
+        return {
+            plaq_id: graph.pzs[i % len(graph.pzs)].name
+            for i, plaq_id in enumerate(plaq_ids)
+        }
+
+    # --- geometric strategy ---
+
+    # 1. Separate bulk (4 data qubits) from boundary (2 data qubits)
+    bulk_plaqs = {pid: p for pid, p in plaquettes.items() if len(p.data_qubits) == 4}
+    boundary_plaqs = {pid: p for pid, p in plaquettes.items() if len(p.data_qubits) == 2}
+
+    # 2. Compute distance from each bulk plaquette's ancilla to each PZ
+    plaq_pz_dist: dict[int, dict[str, int]] = {}
+    for pid, plaq in bulk_plaqs.items():
+        ancilla_edge = graph.state[plaq.ancilla]
+        dists: dict[str, int] = {}
+        for pz in graph.pzs:
+            pz_parking = get_edge_idc_by_pz_name(graph, pz.name)
+            path = find_path_edge_to_edge(graph, ancilla_edge, pz_parking)
+            dists[pz.name] = len(path) if path is not None else 10**6
+        plaq_pz_dist[pid] = dists
+
+    # 3. Assign each bulk plaquette to nearest PZ
+    plaquette_to_pz: dict[int, str] = {}
+    for pid, dists in plaq_pz_dist.items():
+        plaquette_to_pz[pid] = min(dists, key=dists.get)
+
+    # 4. Rebalance: ensure no PZ is overloaded (>120% of fair share)
+    def _gate_count(pid: int) -> int:
+        return len(plaquettes[pid].data_qubits)  # 4 for bulk, 2 for boundary
+
+    total_bulk_gates = sum(_gate_count(pid) for pid in bulk_plaqs)
+    fair_share = total_bulk_gates / len(graph.pzs)
+    threshold = fair_share * 1.2
+
+    # Build adjacency for rebalance cost estimation
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for _bid, boundary in shared_boundaries.items():
+        if boundary.plaquette_a in bulk_plaqs and boundary.plaquette_b in bulk_plaqs:
+            adjacency[boundary.plaquette_a].add(boundary.plaquette_b)
+            adjacency[boundary.plaquette_b].add(boundary.plaquette_a)
+
+    for _iteration in range(len(bulk_plaqs)):
+        # Compute load per PZ
+        pz_load: dict[str, int] = {pz.name: 0 for pz in graph.pzs}
+        for pid in bulk_plaqs:
+            pz_load[plaquette_to_pz[pid]] += _gate_count(pid)
+
+        overloaded = [pz_name for pz_name, load in pz_load.items() if load > threshold]
+        if not overloaded:
+            break
+
+        moved = False
+        for pz_name in overloaded:
+            # Plaquettes on this PZ, sorted by fewest same-PZ neighbors (cheapest to move)
+            candidates = [pid for pid, pn in plaquette_to_pz.items() if pn == pz_name]
+            candidates.sort(
+                key=lambda pid: sum(
+                    1 for nb in adjacency.get(pid, set()) if plaquette_to_pz.get(nb) == pz_name
+                )
+            )
+            for pid in candidates:
+                # Find nearest underloaded PZ
+                underloaded = [
+                    pn for pn, load in pz_load.items()
+                    if pn != pz_name and load + _gate_count(pid) <= threshold
+                ]
+                if not underloaded:
+                    continue
+                best_pz = min(underloaded, key=lambda pn: plaq_pz_dist[pid][pn])
+                plaquette_to_pz[pid] = best_pz
+                pz_load[pz_name] -= _gate_count(pid)
+                pz_load[best_pz] += _gate_count(pid)
+                moved = True
+                if pz_load[pz_name] <= threshold:
+                    break
+        if not moved:
+            break
+
+    # 5. Assign boundary plaquettes to the same PZ as their adjacent bulk plaquette
+    data_to_bulk: dict[int, int] = {}
+    for pid, plaq in bulk_plaqs.items():
+        for dq in plaq.data_qubits:
+            if dq not in data_to_bulk:
+                data_to_bulk[dq] = pid
+
+    for pid, plaq in boundary_plaqs.items():
+        # Find which bulk plaquette shares data qubits with this boundary plaquette
+        neighbor_bulk = None
+        for dq in plaq.data_qubits:
+            if dq in data_to_bulk:
+                neighbor_bulk = data_to_bulk[dq]
+                break
+        if neighbor_bulk is not None and neighbor_bulk in plaquette_to_pz:
+            plaquette_to_pz[pid] = plaquette_to_pz[neighbor_bulk]
+        else:
+            # Fallback: assign to nearest PZ by ancilla distance
+            ancilla_edge = graph.state[plaq.ancilla]
+            best_pz = graph.pzs[0].name
+            best_dist = 10**6
+            for pz in graph.pzs:
+                pz_parking = get_edge_idc_by_pz_name(graph, pz.name)
+                path = find_path_edge_to_edge(graph, ancilla_edge, pz_parking)
+                d = len(path) if path is not None else 10**6
+                if d < best_dist:
+                    best_dist = d
+                    best_pz = pz.name
+            plaquette_to_pz[pid] = best_pz
+
+    return plaquette_to_pz
+
+
+def build_syndrome_map_to_pz(
+    plaquettes: dict[int, Plaquette],
+    plaquette_to_pz: dict[int, str],
+) -> dict[int, str]:
+    """Derive qubit-level ``map_to_pz`` from plaquette assignment.
+
+    Each ancilla → its plaquette's PZ.
+    Shared data qubits → first plaquette's PZ that claims them.
+    """
+    map_to_pz: dict[int, str] = {}
+    for pid in sorted(plaquette_to_pz.keys()):
+        plaq = plaquettes[pid]
+        pz_name = plaquette_to_pz[pid]
+        # Ancilla always goes to its plaquette's PZ
+        map_to_pz[plaq.ancilla] = pz_name
+        # Data qubits: first-claim wins
+        for dq in plaq.data_qubits:
+            if dq not in map_to_pz:
+                map_to_pz[dq] = pz_name
+    return map_to_pz
 
 
 if __name__ == "__main__":
